@@ -123,11 +123,19 @@ class ReplicationCommandHandler:
         """Helper method to start a replication connection to the remote server
         using TCP.
         """
-        client_name = hs.config.worker_name
-        self.factory = ReplicationClientFactory(hs, client_name, self)
-        host = hs.config.worker_replication_host
-        port = hs.config.worker_replication_port
-        hs.get_reactor().connectTCP(host, port, self.factory)
+        if hs.config.redis.redis_enabled:
+            from synapse.replication.tcp.redis import RedisFactory
+
+            logger.info("Connecting to redis.")
+            self.factory = RedisFactory(hs)
+            hs.get_reactor().connectTCP(
+                hs.config.redis.redis_host, hs.config.redis.redis_port, self.factory,
+            )
+        else:
+            self.factory = ReplicationClientFactory(hs, hs.config.worker_name, self)
+            host = hs.config.worker_replication_host
+            port = hs.config.worker_replication_port
+            hs.get_reactor().connectTCP(host, port, self.factory)
 
     async def on_REPLICATE(self, cmd: ReplicateCommand):
         # We only want to announce positions by the writer of the streams.
