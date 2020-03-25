@@ -63,6 +63,7 @@ class ReplicationClientHandler:
         self.clock = hs.get_clock()
         self.presence_handler = hs.get_presence_handler()
         self.instance_id = hs.get_instance_id()
+        self.instance_name = hs.get_instance_name()
 
         self._position_linearizer = Linearizer("replication_position")
 
@@ -137,7 +138,9 @@ class ReplicationClientHandler:
 
         for stream_name, stream in self.streams.items():
             current_token = stream.current_token()
-            self.send_command(PositionCommand(stream_name, current_token))
+            self.send_command(
+                PositionCommand(stream_name, self.instance_name, current_token)
+            )
 
     async def on_USER_SYNC(self, cmd: UserSyncCommand):
         user_sync_counter.inc()
@@ -325,7 +328,7 @@ class ReplicationClientHandler:
 
         We need to check if the client is interested in the stream or not
         """
-        self.send_command(RdataCommand(stream_name, token, data))
+        self.send_command(RdataCommand(stream_name, self.instance_name, token, data))
 
 
 class ReplicationDataHandler:
