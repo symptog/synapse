@@ -66,7 +66,7 @@ from synapse.replication.slave.storage.room import RoomStore
 from synapse.replication.slave.storage.transactions import SlavedTransactionStore
 from synapse.replication.tcp.client import ReplicationClientFactory
 from synapse.replication.tcp.commands import ClearUserSyncsCommand
-from synapse.replication.tcp.handler import WorkerReplicationDataHandler
+from synapse.replication.tcp.handler import ReplicationDataHandler
 from synapse.replication.tcp.streams import (
     AccountDataStream,
     DeviceListsStream,
@@ -626,8 +626,10 @@ class GenericWorkerServer(HomeServer):
         return GenericWorkerReplicationHandler(self)
 
 
-class GenericWorkerReplicationHandler(WorkerReplicationDataHandler):
+class GenericWorkerReplicationHandler(ReplicationDataHandler):
     def __init__(self, hs):
+        super().__init__(hs)
+
         self.store = hs.get_datastore()
         self.typing_handler = hs.get_typing_handler()
         # NB this is a SynchrotronPresence, not a normal PresenceHandler
