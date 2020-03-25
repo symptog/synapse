@@ -583,13 +583,13 @@ class GenericWorkerReplicationHandler(ReplicationDataHandler):
         else:
             self.send_handler = None
 
-    async def on_rdata(self, stream_name, token, rows):
-        await super(GenericWorkerReplicationHandler, self).on_rdata(
-            stream_name, token, rows
+    async def on_rdata(self, stream_name, instance_name, token, rows):
+        await super().on_rdata(stream_name, instance_name, token, rows)
+        run_in_background(
+            self.process_and_notify, stream_name, instance_name, token, rows
         )
-        run_in_background(self.process_and_notify, stream_name, token, rows)
 
-    async def process_and_notify(self, stream_name, token, rows):
+    async def process_and_notify(self, stream_name, instance_name, token, rows):
         try:
             if self.send_handler:
                 self.send_handler.process_replication_rows(stream_name, token, rows)
