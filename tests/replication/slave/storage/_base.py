@@ -18,7 +18,7 @@ from mock import Mock, NonCallableMock
 from synapse.replication.tcp.client import ReplicationClientFactory
 from synapse.replication.tcp.handler import (
     ReplicationClientHandler,
-    WorkerReplicationDataHandler,
+    ReplicationDataHandler,
 )
 from synapse.replication.tcp.resource import ReplicationStreamProtocolFactory
 from synapse.storage.database import make_conn
@@ -58,8 +58,12 @@ class BaseSlavedStoreTestCase(unittest.HomeserverTestCase):
         # off of the slave store rather than the main store.
         self.replication_handler = ReplicationClientHandler(self.hs)
         self.replication_handler.store = self.slaved_store
-        self.replication_handler.replication_data_handler = WorkerReplicationDataHandler(
-            self.slaved_store
+
+        slave_hs = Mock(wraps=hs)
+        slave_hs.get_datastore.return_value = self.slaved_store
+        slave_hs.config.worker_app = "synapsea.app.worker"
+        self.replication_handler.replication_data_handler = ReplicationDataHandler(
+            slave_hs
         )
 
         client_factory = ReplicationClientFactory(self.hs, "client_name")
