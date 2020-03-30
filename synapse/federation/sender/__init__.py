@@ -525,9 +525,6 @@ class FederationSender(object):
         # to a worker.
         return []
 
-    def stream_positions(self):
-        return {"federation": self.federation_position}
-
     def process_replication_rows(self, stream_name, token, rows):
         # The federation stream contains things that we want to send out, e.g.
         # presence, typing, etc.

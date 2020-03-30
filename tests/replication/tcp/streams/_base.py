@@ -95,13 +95,6 @@ class TestReplicationClientHandler(ReplicationDataHandler):
         self.streams = set()
         self._received_rdata_rows = []
 
-    def get_streams_to_replicate(self):
-        positions = {s: 0 for s in self.streams}
-        for stream, token, _ in self._received_rdata_rows:
-            if stream in self.streams:
-                positions[stream] = max(token, positions.get(stream, 0))
-        return positions
-
     async def on_rdata(self, stream_name, token, rows):
         await super().on_rdata(stream_name, token, rows)
         for r in rows:

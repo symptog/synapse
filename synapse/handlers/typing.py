@@ -302,12 +302,6 @@ class TypingWorkerHandler(object):
         # map room IDs to sets of users currently typing
         self._room_typing = {}
 
-    def stream_positions(self):
-        # We must update this typing token from the response of the previous
-        # sync. In particular, the stream id may "reset" back to zero/a low
-        # value which we *must* use for the next replication request.
-        return {"typing": self._latest_room_serial}
-
     def process_replication_rows(self, token, rows):
         if self._latest_room_serial > token:
             # The master has gone backwards. To prevent inconsistent data, just

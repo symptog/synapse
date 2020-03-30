@@ -589,13 +589,6 @@ class GenericWorkerReplicationHandler(ReplicationDataHandler):
         )
         run_in_background(self.process_and_notify, stream_name, token, rows)
 
-    def get_streams_to_replicate(self):
-        args = super(GenericWorkerReplicationHandler, self).get_streams_to_replicate()
-        args.update(self.typing_handler.stream_positions())
-        if self.send_handler:
-            args.update(self.send_handler.stream_positions())
-        return args
-
     async def process_and_notify(self, stream_name, token, rows):
         try:
             if self.send_handler:
