@@ -15,7 +15,11 @@
 
 from mock import Mock
 
-from synapse.replication.tcp.handler import ReplicationClientHandler
+from synapse.app.generic_worker import GenericWorkerServer
+from synapse.replication.tcp.handler import (
+    ReplicationClientHandler,
+    ReplicationDataHandler,
+)
 from synapse.replication.tcp.protocol import ClientReplicationStreamProtocol
 from synapse.replication.tcp.resource import ReplicationStreamProtocolFactory
 
@@ -26,20 +30,30 @@ from tests.server import FakeTransport
 class BaseStreamTestCase(unittest.HomeserverTestCase):
     """Base class for tests of the replication streams"""
 
-    def make_homeserver(self, reactor, clock):
-        self.test_handler = Mock(wraps=TestReplicationClientHandler())
-        return self.setup_test_homeserver(replication_data_handler=self.test_handler)
-
     def prepare(self, reactor, clock, hs):
         # build a replication server
         server_factory = ReplicationStreamProtocolFactory(hs)
         self.streamer = hs.get_replication_streamer()
         self.server = server_factory.buildProtocol(None)
 
-        repl_handler = ReplicationClientHandler(hs)
+        # Make a new HomeServer object for the worker
+        config = self.default_config()
+        config["worker_app"] = "synapse.app.generic_worker"
+        self.worker_hs = self.setup_test_homeserver(
+            http_client=None, homeserverToUse=GenericWorkerServer, config=config,
+        )
+
+        # Since we use sqlite in memory databases we need to make sure the
+        # databases objects are the same.
+        self.worker_hs.get_datastore().db = hs.get_datastore().db
+
+        self.test_handler = Mock(wraps=TestReplicationClientHandler(self.worker_hs))
+        self.worker_hs.replication_data_handler = self.test_handler
+
+        repl_handler = ReplicationClientHandler(self.worker_hs)
         repl_handler.handler = self.test_handler
         self.client = ClientReplicationStreamProtocol(
-            hs, "client", "test", clock, repl_handler,
+            self.worker_hs, "client", "test", clock, repl_handler,
         )
 
         self._client_transport = None
@@ -75,8 +89,9 @@ class BaseStreamTestCase(unittest.HomeserverTestCase):
         self.pump(0.1)
 
 
-class TestReplicationClientHandler:
-    def __init__(self):
+class TestReplicationClientHandler(ReplicationDataHandler):
+    def __init__(self, hs):
+        super().__init__(hs)
         self.streams = set()
         self._received_rdata_rows = []
 
@@ -88,8 +103,6 @@ class TestReplicationClientHandler:
         return positions
 
     async def on_rdata(self, stream_name, token, rows):
+        await super().on_rdata(stream_name, token, rows)
         for r in rows:
             self._received_rdata_rows.append((stream_name, token, r))
-
-    async def on_position(self, stream_name, token):
-        pass
