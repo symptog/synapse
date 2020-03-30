@@ -274,6 +274,12 @@ class StreamWorkerStore(EventsWorkerStore, SQLBaseStore):
 
         self._stream_order_on_start = self.get_room_max_stream_ordering()
 
+        # We pull out the current federation stream position now so that we
+        # always have a known value for the federation position in memory so
+        # that we don't have to bounce via a deferred once when we start the
+        # replication streams.
+        self.federation_out_pos_startup = self._get_federation_out_pos(db_conn)
+
     @abc.abstractmethod
     def get_room_max_stream_ordering(self):
         raise NotImplementedError()
@@ -281,6 +287,17 @@ class StreamWorkerStore(EventsWorkerStore, SQLBaseStore):
     @abc.abstractmethod
     def get_room_min_stream_ordering(self):
         raise NotImplementedError()
+
+    def _get_federation_out_pos(self, db_conn):
+        sql = "SELECT stream_id FROM federation_stream_position WHERE type = ?"
+        sql = self.database_engine.convert_param_style(sql)
+
+        txn = db_conn.cursor()
+        txn.execute(sql, ("federation",))
+        rows = txn.fetchall()
+        txn.close()
+
+        return rows[0][0] if rows else -1
 
     @defer.inlineCallbacks
     def get_room_events_stream_for_rooms(

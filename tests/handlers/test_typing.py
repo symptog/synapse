@@ -79,8 +79,13 @@ class TypingNotificationsTestCase(unittest.HomeserverTestCase):
                 "get_user_directory_stream_pos",
                 "get_current_state_deltas",
                 "get_device_updates_by_remote",
+                "federation_out_pos_startup",
+                "get_room_max_stream_ordering",
             ]
         )
+
+        datastores.main.federation_out_pos_startup = 0
+        datastores.main.get_room_max_stream_ordering.return_value = 0
 
         # the tests assume that we are starting at unix time 1000
         reactor.pump((1000,))

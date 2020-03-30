@@ -25,6 +25,7 @@ from twisted.internet import defer
 import synapse
 import synapse.metrics
 from synapse.events import EventBase
+from synapse.federation import send_queue
 from synapse.federation.sender.per_destination_queue import PerDestinationQueue
 from synapse.federation.sender.transaction_manager import TransactionManager
 from synapse.federation.units import Edu
@@ -41,8 +42,16 @@ from synapse.metrics import (
     events_processed_counter,
 )
 from synapse.metrics.background_process_metrics import run_as_background_process
+from synapse.replication.tcp.streams import (
+    DeviceListsStream,
+    EventsStream,
+    FederationStream,
+    ReceiptsStream,
+    ToDeviceStream,
+)
 from synapse.storage.presence import UserPresenceState
 from synapse.types import ReadReceipt
+from synapse.util.async_helpers import Linearizer
 from synapse.util.metrics import Measure, measure_func
 
 logger = logging.getLogger(__name__)
@@ -68,6 +77,10 @@ class FederationSender(object):
 
         self.clock = hs.get_clock()
         self.is_mine_id = hs.is_mine_id
+
+        self.federation_position = self.store.federation_out_pos_startup
+        self._fed_position_linearizer = Linearizer(name="_fed_position_linearizer")
+        self._last_ack = self.federation_position
 
         self._transaction_manager = TransactionManager(hs)
 
@@ -125,6 +138,10 @@ class FederationSender(object):
         self._rr_txn_interval_per_room_ms = (
             1000.0 / hs.config.federation_rr_transactions_per_room_per_second
         )
+
+        # There may be some events that are persisted but haven't been sent,
+        # so kick of the send loop immediately.
+        self.notify_new_events(self.store.get_room_max_stream_ordering())
 
     def _get_per_destination_queue(self, destination: str) -> PerDestinationQueue:
         """Get or create a PerDestinationQueue for the given destination
@@ -499,9 +516,7 @@ class FederationSender(object):
         self._get_per_destination_queue(destination).attempt_new_transaction()
 
     def get_current_token(self) -> int:
-        # Dummy implementation for case where federation sender isn't offloaded
-        # to a worker.
-        return 0
+        return self.federation_position
 
     async def get_replication_rows(
         self, from_token, to_token, limit, federation_ack=None
@@ -509,3 +524,79 @@ class FederationSender(object):
         # Dummy implementation for case where federation sender isn't offloaded
         # to a worker.
         return []
+
+    def stream_positions(self):
+        return {"federation": self.federation_position}
+
+    def process_replication_rows(self, stream_name, token, rows):
+        # The federation stream contains things that we want to send out, e.g.
+        # presence, typing, etc.
+        if stream_name == FederationStream.NAME:
+            send_queue.process_rows_for_federation(self, rows)
+            run_in_background(self.update_token, token)
+
+        # We also need to poke the federation sender when new events happen
+        elif stream_name == EventsStream.NAME:
+            self.notify_new_events(token)
+
+        # ... and when new receipts happen
+        elif stream_name == ReceiptsStream.NAME:
+            run_as_background_process(
+                "process_receipts_for_federation", self._on_new_receipts, rows
+            )
+
+        # ... as well as device updates and messages
+        elif stream_name == DeviceListsStream.NAME:
+            # The entities are either user IDs (starting with '@') whose devices
+            # have changed, or remote servers that we need to tell about
+            # changes.
+            hosts = {row.entity for row in rows if not row.entity.startswith("@")}
+            for host in hosts:
+                self.send_device_messages(host)
+
+        elif stream_name == ToDeviceStream.NAME:
+            # The to_device stream includes stuff to be pushed to both local
+            # clients and remote servers, so we ignore entities that start with
+            # '@' (since they'll be local users rather than destinations).
+            hosts = {row.entity for row in rows if not row.entity.startswith("@")}
+            for host in hosts:
+                self.send_device_messages(host)
+
+    async def _on_new_receipts(self, rows):
+        """
+        Args:
+            rows (Iterable[synapse.replication.tcp.streams.ReceiptsStream.ReceiptsStreamRow]):
+                new receipts to be processed
+        """
+        for receipt in rows:
+            # we only want to send on receipts for our own users
+            if not self.is_mine_id(receipt.user_id):
+                continue
+            receipt_info = ReadReceipt(
+                receipt.room_id,
+                receipt.receipt_type,
+                receipt.user_id,
+                [receipt.event_id],
+                receipt.data,
+            )
+            await self.send_read_receipt(receipt_info)
+
+    async def update_token(self, token):
+        try:
+            self.federation_position = token
+
+            # We linearize here to ensure we don't have races updating the token
+            with (await self._fed_position_linearizer.queue(None)):
+                if self._last_ack < self.federation_position:
+                    await self.store.update_federation_out_pos(
+                        "federation", self.federation_position
+                    )
+
+                    # We ACK this token over replication so that the master can drop
+                    # its in memory queues
+                    self.hs.get_tcp_replication().send_federation_ack(
+                        self.federation_position
+                    )
+                    self._last_ack = self.federation_position
+        except Exception:
+            logger.exception("Error updating federation stream position")

@@ -36,7 +36,6 @@ from synapse.app import _base
 from synapse.config._base import ConfigError
 from synapse.config.homeserver import HomeServerConfig
 from synapse.config.logger import setup_logging
-from synapse.federation import send_queue
 from synapse.federation.transport.server import TransportLayerServer
 from synapse.handlers.presence import PresenceHandler, get_interested_parties
 from synapse.http.server import JsonResource
@@ -122,8 +121,6 @@ from synapse.storage.data_stores.main.monthly_active_users import (
 )
 from synapse.storage.data_stores.main.presence import UserPresenceState
 from synapse.storage.data_stores.main.user_directory import UserDirectoryStore
-from synapse.types import ReadReceipt
-from synapse.util.async_helpers import Linearizer
 from synapse.util.httpresourcetree import create_resource_tree
 from synapse.util.manhole import manhole
 from synapse.util.versionstring import get_version_string
@@ -444,25 +441,7 @@ class GenericWorkerSlavedStore(
     MediaRepositoryStore,
     BaseSlavedStore,
 ):
-    def __init__(self, database, db_conn, hs):
-        super(GenericWorkerSlavedStore, self).__init__(database, db_conn, hs)
-
-        # We pull out the current federation stream position now so that we
-        # always have a known value for the federation position in memory so
-        # that we don't have to bounce via a deferred once when we start the
-        # replication streams.
-        self.federation_out_pos_startup = self._get_federation_out_pos(db_conn)
-
-    def _get_federation_out_pos(self, db_conn):
-        sql = "SELECT stream_id FROM federation_stream_position WHERE type = ?"
-        sql = self.database_engine.convert_param_style(sql)
-
-        txn = db_conn.cursor()
-        txn.execute(sql, ("federation",))
-        rows = txn.fetchall()
-        txn.close()
-
-        return rows[0][0] if rows else -1
+    pass
 
 
 class GenericWorkerServer(HomeServer):
@@ -640,7 +619,7 @@ class GenericWorkerReplicationHandler(ReplicationDataHandler):
         self.pusher_pool = hs.get_pusherpool()
 
         if hs.config.send_federation:
-            self.send_handler = FederationSenderHandler(hs, self)
+            self.send_handler = hs.get_federation_sender()
         else:
             self.send_handler = None
 
@@ -758,112 +737,6 @@ class GenericWorkerReplicationHandler(ReplicationDataHandler):
         # pending stuff to send to it.
         if self.send_handler:
             self.send_handler.wake_destination(server)
-
-
-class FederationSenderHandler(object):
-    """Processes the replication stream and forwards the appropriate entries
-    to the federation sender.
-    """
-
-    def __init__(self, hs: GenericWorkerServer, replication_client):
-        self.store = hs.get_datastore()
-        self._is_mine_id = hs.is_mine_id
-        self.federation_sender = hs.get_federation_sender()
-        self.replication_client = replication_client
-
-        self.federation_position = self.store.federation_out_pos_startup
-        self._fed_position_linearizer = Linearizer(name="_fed_position_linearizer")
-
-        self._last_ack = self.federation_position
-
-        self._room_serials = {}
-        self._room_typing = {}
-
-    def on_start(self):
-        # There may be some events that are persisted but haven't been sent,
-        # so send them now.
-        self.federation_sender.notify_new_events(
-            self.store.get_room_max_stream_ordering()
-        )
-
-    def wake_destination(self, server: str):
-        self.federation_sender.wake_destination(server)
-
-    def stream_positions(self):
-        return {"federation": self.federation_position}
-
-    def process_replication_rows(self, stream_name, token, rows):
-        # The federation stream contains things that we want to send out, e.g.
-        # presence, typing, etc.
-        if stream_name == "federation":
-            send_queue.process_rows_for_federation(self.federation_sender, rows)
-            run_in_background(self.update_token, token)
-
-        # We also need to poke the federation sender when new events happen
-        elif stream_name == "events":
-            self.federation_sender.notify_new_events(token)
-
-        # ... and when new receipts happen
-        elif stream_name == ReceiptsStream.NAME:
-            run_as_background_process(
-                "process_receipts_for_federation", self._on_new_receipts, rows
-            )
-
-        # ... as well as device updates and messages
-        elif stream_name == DeviceListsStream.NAME:
-            # The entities are either user IDs (starting with '@') whose devices
-            # have changed, or remote servers that we need to tell about
-            # changes.
-            hosts = {row.entity for row in rows if not row.entity.startswith("@")}
-            for host in hosts:
-                self.federation_sender.send_device_messages(host)
-
-        elif stream_name == ToDeviceStream.NAME:
-            # The to_device stream includes stuff to be pushed to both local
-            # clients and remote servers, so we ignore entities that start with
-            # '@' (since they'll be local users rather than destinations).
-            hosts = {row.entity for row in rows if not row.entity.startswith("@")}
-            for host in hosts:
-                self.federation_sender.send_device_messages(host)
-
-    async def _on_new_receipts(self, rows):
-        """
-        Args:
-            rows (Iterable[synapse.replication.tcp.streams.ReceiptsStream.ReceiptsStreamRow]):
-                new receipts to be processed
-        """
-        for receipt in rows:
-            # we only want to send on receipts for our own users
-            if not self._is_mine_id(receipt.user_id):
-                continue
-            receipt_info = ReadReceipt(
-                receipt.room_id,
-                receipt.receipt_type,
-                receipt.user_id,
-                [receipt.event_id],
-                receipt.data,
-            )
-            await self.federation_sender.send_read_receipt(receipt_info)
-
-    async def update_token(self, token):
-        try:
-            self.federation_position = token
-
-            # We linearize here to ensure we don't have races updating the token
-            with (await self._fed_position_linearizer.queue(None)):
-                if self._last_ack < self.federation_position:
-                    await self.store.update_federation_out_pos(
-                        "federation", self.federation_position
-                    )
-
-                    # We ACK this token over replication so that the master can drop
-                    # its in memory queues
-                    self.replication_client.send_federation_ack(
-                        self.federation_position
-                    )
-                    self._last_ack = self.federation_position
-        except Exception:
-            logger.exception("Error updating federation stream position")
 
 
 def start(config_options):
