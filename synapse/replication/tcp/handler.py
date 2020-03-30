@@ -234,15 +234,7 @@ class ReplicationClientHandler:
         # connection reconnects under us.
         with await self._position_linearizer.queue(cmd.stream_name):
             # Find where we previously streamed up to.
-            current_token = self.replication_data_handler.get_streams_to_replicate().get(
-                cmd.stream_name
-            )
-            if current_token is None:
-                logger.debug(
-                    "Got POSITION for stream we're not subscribed to: %s",
-                    cmd.stream_name,
-                )
-                return
+            current_token = stream.current_token()
 
             # Fetch all updates between then and now.
             limited = cmd.token != current_token
