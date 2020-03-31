@@ -70,8 +70,8 @@ class ReplicationCommandHandler:
         # The factory used to create connections.
         self.factory = None  # type: Optional[ReplicationClientFactory]
 
-        # The current connection. None if we are currently (re)connecting
-        self.connection = None
+        # The currently connected connections.
+        self.connections = []
 
     def start_replication(self, hs):
         """Helper method to start a replication connection to the remote server
@@ -175,29 +175,34 @@ class ReplicationCommandHandler:
         """
         return self.presence_handler.get_currently_syncing_users()
 
-    def update_connection(self, connection):
-        """Called when a connection has been established (or lost with None).
-        """
-        self.connection = connection
+    def new_connection(self, connection):
+        self.connections.append(connection)
 
-    def finished_connecting(self):
-        """Called when we have successfully subscribed and caught up to all
-        streams we're interested in.
-        """
-        logger.info("Finished connecting to server")
-
-        # We don't reset the delay any earlier as otherwise if there is a
-        # problem during start up we'll end up tight looping connecting to the
-        # server.
+        # If we're using a ReplicationClientFactory then we reset the connection
+        # delay now.
         if self.factory:
             self.factory.resetDelay()
+
+    def lost_connection(self, connection):
+        try:
+            self.connections.remove(connection)
+        except ValueError:
+            pass
+
+    def connected(self) -> bool:
+        """Do we have any replication connections open?
+
+        Used to no-op if nothing is connected.
+        """
+        return bool(self.connections)
 
     def send_command(self, cmd: Command):
         """Send a command to master (when we get establish a connection if we
         don't have one already.)
         """
-        if self.connection:
-            self.connection.send_command(cmd)
+        if self.connections:
+            for connection in self.connections:
+                connection.send_command(cmd)
         else:
             logger.warning("Dropping command as not connected: %r", cmd.NAME)
 
