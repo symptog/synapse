@@ -45,6 +45,10 @@ class ReceiptRestServlet(RestServlet):
 
         body = parse_json_object_from_request(request)
 
+        hidden = body.get("m.hidden", False)
+        if not isinstance(hidden, (bool,)):
+            hidden = False
+
         await self.presence_handler.bump_presence_active_time(requester.user)
 
         await self.receipts_handler.received_client_receipt(
@@ -52,7 +56,7 @@ class ReceiptRestServlet(RestServlet):
             receipt_type,
             user_id=requester.user.to_string(),
             event_id=event_id,
-            hidden=body.get("m.hidden", False),
+            hidden=hidden,
         )
 
         return 200, {}

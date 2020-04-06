@@ -125,18 +125,6 @@ class ReceiptsHandler(BaseHandler):
         if not hidden:
             await self.federation.send_read_receipt(receipt)
 
-    async def get_receipts_for_room(self, room_id, to_key):
-        """Gets all receipts for a room, upto the given key.
-        """
-        result = await self.store.get_linearized_receipts_for_room(
-            room_id, to_key=to_key
-        )
-
-        if not result:
-            return []
-
-        return result
-
 
 class ReceiptEventSource(object):
     def __init__(self, hs):

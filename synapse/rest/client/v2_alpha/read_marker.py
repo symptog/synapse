@@ -41,12 +41,17 @@ class ReadMarkerRestServlet(RestServlet):
 
         read_event_id = body.get("m.read", None)
         if read_event_id:
+
+            hidden = body.get("m.hidden", False)
+            if not isinstance(hidden, (bool,)):
+                hidden = False
+
             await self.receipts_handler.received_client_receipt(
                 room_id,
                 "m.read",
                 user_id=requester.user.to_string(),
                 event_id=read_event_id,
-                hidden=body.get("m.hidden", False),
+                hidden=hidden,
             )
 
         read_marker_event_id = body.get("m.fully_read", None)
